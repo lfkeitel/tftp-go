@@ -13,9 +13,19 @@ import (
 var rootDir = ""
 
 func main() {
-	log.Println("Start TFTP server...")
-
 	rootDir = os.Args[1]
+
+	stat, err := os.Stat(rootDir)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	if !stat.IsDir() {
+		log.Fatalln("Server root is not a directory")
+	}
+
+	fullpath, _ := filepath.Abs(rootDir)
+	log.Printf("Start TFTP server serving %s", fullpath)
+
 	listenAndServe()
 }
 
@@ -51,15 +61,13 @@ func listenAndServe() {
 		}
 
 		switch opcode {
-		case opRead:
-			processReadRequest(reqConn, reqFields)
-			// case opWrite:
-			// 	c.processWriteRequest(reqFields)
+		case opRead, opWrite:
+			processRequest(reqConn, opcode, reqFields)
 		}
 	}
 }
 
-func processReadRequest(conn *requestConn, req [][]byte) {
+func processRequest(conn *requestConn, op uint16, req [][]byte) {
 	if len(req) < 2 {
 		writeError(conn, errNotDefined, "")
 		return
@@ -69,15 +77,23 @@ func processReadRequest(conn *requestConn, req [][]byte) {
 	mode := string(req[1])
 	filepath, _ := filepath.Abs(filepath.Join(rootDir, filename))
 
-	log.Printf("Read request for %s with mode %s from %s\n", filename, mode, conn.addr.String())
+	log.Printf("%s request for %s with mode %s from %s\n", optionToString(op), filename, mode, conn.addr.String())
 
-	if !fileExists(filepath) {
+	if op == opRead && !fileExists(filepath) {
 		log.Printf("File %s not found\n", filepath)
 		writeError(conn, errFileNotFound, "File not found")
 		return
 	}
 
-	file, err := os.Open(filepath)
+	var file *os.File
+	var err error
+
+	if op == opRead {
+		file, err = os.Open(filepath)
+	} else {
+		file, err = os.Create(filepath)
+	}
+
 	if err != nil {
 		log.Println(err)
 		writeError(conn, errAccessViolation, "Failed to open file")
@@ -92,7 +108,7 @@ func processReadRequest(conn *requestConn, req [][]byte) {
 	}
 
 	client := &connection{
-		op:     opRead,
+		op:     op,
 		client: &requestConn{conn: newConn, addr: conn.addr},
 		file:   file,
 		options: &options{
@@ -103,36 +119,4 @@ func processReadRequest(conn *requestConn, req [][]byte) {
 	}
 
 	go client.start()
-}
-
-func writeError(conn *requestConn, code int, msg string) {
-	msgBytes := []byte(msg)
-
-	resp := make([]byte, 5+len(msgBytes))
-	// Op code
-	resp[0] = byte(opError >> 8)
-	resp[1] = byte(opError)
-	// Error code
-	resp[2] = byte(code >> 8)
-	resp[3] = byte(code)
-	// Human-readable message
-	copy(resp[4:len(resp)-1], msgBytes)
-	// Null terminator
-	resp[len(resp)-1] = 0
-
-	conn.conn.WriteTo(resp, conn.addr)
-}
-
-func sendData(conn *requestConn, blockID uint16, data []byte) {
-	resp := make([]byte, 4+len(data))
-	// Op code
-	resp[0] = byte(opData >> 8)
-	resp[1] = byte(opData)
-	// Block #
-	resp[2] = byte(blockID >> 8)
-	resp[3] = byte(blockID)
-	// Data
-	copy(resp[4:], data)
-
-	conn.conn.WriteTo(resp, conn.addr)
 }

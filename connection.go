@@ -8,7 +8,7 @@ import (
 )
 
 type connection struct {
-	op           int
+	op           uint16
 	currentBlock []byte
 	blockCounter uint16
 	client       *requestConn
@@ -17,10 +17,11 @@ type connection struct {
 }
 
 type response struct {
-	op        int
+	op        uint16
 	blockID   uint16
 	errorCode uint16
 	errorMsg  string
+	data      []byte
 }
 
 func (c *connection) start() {
@@ -31,8 +32,10 @@ func (c *connection) start() {
 	switch c.op {
 	case opRead:
 		c.doRead()
-		log.Printf("Transfer completed in %s", time.Since(start).String())
+	case opWrite:
+		c.doWrite()
 	}
+	log.Printf("Transfer completed in %s", time.Since(start).String())
 }
 
 func (c *connection) doRead() {
@@ -80,6 +83,10 @@ func (c *connection) doRead() {
 			prepareNextBlock = false
 			retransmits++
 			continue
+		} else {
+			writeError(c.client, errIllegalOperation, "Invalid operation for read request")
+			c.close()
+			break
 		}
 
 		if len(c.currentBlock) < c.options.blockSize {
@@ -89,8 +96,54 @@ func (c *connection) doRead() {
 	}
 }
 
+func (c *connection) doWrite() {
+	log.Println("Starting write")
+	sendAck(c.client, 0)
+
+	for {
+		resp := c.getResp()
+		if resp == nil {
+			break
+		}
+
+		if resp.op == opData {
+			_, err := c.file.Write(resp.data)
+			if err != nil {
+				log.Println(err)
+				writeError(c.client, errAccessViolation, "Failed to write block")
+				c.close()
+				break
+			}
+
+			c.blockCounter = resp.blockID
+			sendAck(c.client, c.blockCounter)
+
+			if len(resp.data) < c.options.blockSize { // Transfer complete
+				c.close()
+				break
+			}
+		} else if resp.op == opError { // Client sent error
+			log.Printf("Error %d: %s", resp.errorCode, resp.errorMsg)
+			c.close()
+			break
+		} else if resp.op == opRetransmit {
+			sendAck(c.client, c.blockCounter)
+		} else {
+			writeError(c.client, errIllegalOperation, "Invalid operation for read request")
+			c.close()
+			break
+		}
+	}
+}
+
 func (c *connection) getResp() *response {
-	buffer := make([]byte, 512)
+	var buffer []byte
+	if c.op == opRead {
+		buffer = make([]byte, 512)
+	} else {
+		buffer = make([]byte, c.options.blockSize+4)
+	}
+
 	c.client.conn.SetReadDeadline(time.Now().Add(c.options.timeout))
 
 	n, addr, err := c.client.conn.ReadFrom(buffer)
@@ -131,6 +184,12 @@ func (c *connection) getResp() *response {
 			op:        opError,
 			errorCode: decodeUInt16(recv[2:4]),
 			errorMsg:  errorMsg,
+		}
+	case opData:
+		return &response{
+			op:      opData,
+			blockID: decodeUInt16(recv[2:4]),
+			data:    recv[4:],
 		}
 	default:
 		writeError(c.client, errIllegalOperation, "")
