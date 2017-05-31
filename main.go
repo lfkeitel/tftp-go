@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -10,10 +11,20 @@ import (
 	"time"
 )
 
-var rootDir = ""
+var (
+	rootDir      string
+	allowCreate  bool
+	disableWrite bool
+)
+
+func init() {
+	flag.StringVar(&rootDir, "root", ".", "Server root")
+	flag.BoolVar(&allowCreate, "create", false, "Allow creation of new files")
+	flag.BoolVar(&disableWrite, "nowrite", false, "Disable writing any files")
+}
 
 func main() {
-	rootDir = os.Args[1]
+	flag.Parse()
 
 	stat, err := os.Stat(rootDir)
 	if err != nil {
@@ -73,14 +84,25 @@ func processRequest(conn *requestConn, op uint16, req [][]byte) {
 		return
 	}
 
+	if op == opWrite && disableWrite {
+		writeError(conn, errAccessViolation, "Writes disabled")
+		return
+	}
+
 	filename := string(req[0])
 	mode := string(req[1])
 	filepath, _ := filepath.Abs(filepath.Join(rootDir, filename))
 
 	log.Printf("%s request for %s with mode %s from %s\n", optionToString(op), filename, mode, conn.addr.String())
 
-	if op == opRead && !fileExists(filepath) {
-		log.Printf("File %s not found\n", filepath)
+	exists := fileExists(filepath)
+
+	if op == opRead && !exists {
+		writeError(conn, errFileNotFound, "File not found")
+		return
+	}
+
+	if op == opWrite && !exists && !allowCreate {
 		writeError(conn, errFileNotFound, "File not found")
 		return
 	}
