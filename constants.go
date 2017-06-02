@@ -18,6 +18,7 @@ const (
 	opData       uint16 = 3
 	opAck        uint16 = 4
 	opError      uint16 = 5
+	opOAck       uint16 = 6
 )
 
 // TFTP error codes
@@ -30,17 +31,35 @@ const (
 	errUnknownTID       = 5
 	errFileExists       = 6
 	errNoSuchUser       = 7
+	errOptionsDenied    = 8
 )
 
+// TFTP transfer modes
 const (
 	modeNetascii = "netascii"
 	modeOctet    = "octet"
 )
 
-type options struct {
+// TFTP options
+const (
+	optionBulkSize     = "blksize"
+	optionTimeout      = "timeout"
+	optionTransferSize = "tsize"
+)
+
+var defaultOptions = &tftpOptions{
+	blockSize:  512,
+	timeout:    5 * time.Second,
+	windowSize: 1,
+	tsize:      -1,
+}
+
+type tftpOptions struct {
+	oackSent   bool
 	blockSize  int
 	timeout    time.Duration
 	windowSize int
+	tsize      int64
 }
 
 func optionToString(op uint16) string {
@@ -85,69 +104,4 @@ func encodeUInt16(in uint16) []byte {
 func fileExists(filename string) bool {
 	_, err := os.Stat(filename)
 	return err == nil
-}
-
-func sendReadWriteRequest(conn *requestConn, op uint16, filename, mode string) {
-	if op != opWrite && op != opRead {
-		return
-	}
-
-	filenameBytes := []byte(filename)
-	modeBytes := []byte(mode)
-	resp := make([]byte, 4+len(filenameBytes)+len(modeBytes))
-	// Op code
-	resp[0] = byte(op >> 8)
-	resp[1] = byte(op)
-	// Filename
-	copy(resp[2:len(filenameBytes)+2], filenameBytes)
-	resp[len(filenameBytes)+2] = 0 // Null terminator
-	// Mode
-	copy(resp[len(filenameBytes)+3:len(resp)], modeBytes)
-	resp[len(resp)-1] = 0 // Null terminator
-
-	conn.conn.WriteTo(resp, conn.addr)
-}
-
-func sendData(conn *requestConn, blockID uint16, data []byte) {
-	resp := make([]byte, 4+len(data))
-	// Op code
-	resp[0] = byte(opData >> 8)
-	resp[1] = byte(opData)
-	// Block #
-	resp[2] = byte(blockID >> 8)
-	resp[3] = byte(blockID)
-	// Data
-	copy(resp[4:], data)
-
-	conn.conn.WriteTo(resp, conn.addr)
-}
-
-func sendAck(conn *requestConn, blockID uint16) {
-	resp := make([]byte, 4)
-	// Op code
-	resp[0] = byte(opAck >> 8)
-	resp[1] = byte(opAck)
-	// Block #
-	resp[2] = byte(blockID >> 8)
-	resp[3] = byte(blockID)
-
-	conn.conn.WriteTo(resp, conn.addr)
-}
-
-func writeError(conn *requestConn, code int, msg string) {
-	msgBytes := []byte(msg)
-
-	resp := make([]byte, 5+len(msgBytes))
-	// Op code
-	resp[0] = byte(opError >> 8)
-	resp[1] = byte(opError)
-	// Error code
-	resp[2] = byte(code >> 8)
-	resp[3] = byte(code)
-	// Human-readable message
-	copy(resp[4:len(resp)-1], msgBytes)
-	// Null terminator
-	resp[len(resp)-1] = 0
-
-	conn.conn.WriteTo(resp, conn.addr)
 }

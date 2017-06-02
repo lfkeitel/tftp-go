@@ -2,7 +2,6 @@ package main
 
 import (
 	"log"
-	"net"
 	"os"
 	"time"
 )
@@ -13,7 +12,7 @@ type connection struct {
 	blockCounter uint16
 	client       *requestConn
 	file         *os.File
-	options      *options
+	options      *tftpOptions
 }
 
 type response struct {
@@ -60,8 +59,9 @@ func (c *connection) doRead() {
 		}
 
 		c.sendBlock()
-		resp := c.getResp()
+		resp := nextMessage(c.client, c.op, c.options)
 		if resp == nil {
+			c.close()
 			break
 		}
 
@@ -98,11 +98,14 @@ func (c *connection) doRead() {
 
 func (c *connection) doWrite() {
 	log.Println("Starting write")
-	sendAck(c.client, 0)
+	if !c.options.oackSent {
+		sendAck(c.client, 0)
+	}
 
 	for {
-		resp := c.getResp()
+		resp := nextMessage(c.client, c.op, c.options)
 		if resp == nil {
+			c.close()
 			break
 		}
 
@@ -133,68 +136,6 @@ func (c *connection) doWrite() {
 			c.close()
 			break
 		}
-	}
-}
-
-func (c *connection) getResp() *response {
-	var buffer []byte
-	if c.op == opRead {
-		buffer = make([]byte, 512)
-	} else {
-		buffer = make([]byte, c.options.blockSize+4)
-	}
-
-	c.client.conn.SetReadDeadline(time.Now().Add(c.options.timeout))
-
-	n, addr, err := c.client.conn.ReadFrom(buffer)
-	if err != nil {
-		netErr := err.(net.Error)
-		if netErr.Timeout() {
-			return &response{op: opRetransmit}
-		}
-		log.Println(err)
-		return nil
-	}
-
-	c.client.addr = addr
-
-	if n < 4 {
-		writeError(c.client, errNotDefined, "Malformatted message")
-		c.close()
-		return nil
-	}
-
-	recv := buffer[:n]
-
-	opcode := decodeUInt16(recv[:2])
-
-	switch opcode {
-	case opAck:
-		return &response{
-			op:      opAck,
-			blockID: decodeUInt16(recv[2:4]),
-		}
-	case opError:
-		errorMsg := ""
-		if len(recv) > 4 {
-			errorMsg = string(recv[4 : len(recv)-1])
-		}
-
-		return &response{
-			op:        opError,
-			errorCode: decodeUInt16(recv[2:4]),
-			errorMsg:  errorMsg,
-		}
-	case opData:
-		return &response{
-			op:      opData,
-			blockID: decodeUInt16(recv[2:4]),
-			data:    recv[4:],
-		}
-	default:
-		writeError(c.client, errIllegalOperation, "")
-		c.close()
-		return nil
 	}
 }
 
