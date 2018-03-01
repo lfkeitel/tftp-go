@@ -11,6 +11,7 @@ Build using `go build` or `go install`.
 - `-rootdir` - The root directory to serve. Defaults to the current working directory.
 - `-create` - Allow creation of non-existant files.
 - `-nowrite` - Disable all writes, makes the server read-only.
+- `-ow` - Allow overwriting existing files.
 
 The server must be ran with enough privileges to listen on TFTP port 69/udp.
 
