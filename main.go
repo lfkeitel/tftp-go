@@ -14,15 +14,17 @@ import (
 )
 
 var (
-	rootDir      string
-	allowCreate  bool
-	disableWrite bool
+	rootDir        string
+	allowCreate    bool
+	disableWrite   bool
+	allowOverwrite bool
 )
 
 func init() {
 	flag.StringVar(&rootDir, "root", ".", "Server root")
 	flag.BoolVar(&allowCreate, "create", false, "Allow creation of new files")
 	flag.BoolVar(&disableWrite, "nowrite", false, "Disable writing any files")
+	flag.BoolVar(&allowOverwrite, "ow", false, "Allow overwriting existing files")
 }
 
 func main() {
@@ -116,6 +118,11 @@ func processRequest(conn *requestConn, op uint16, req [][]byte) {
 	if op == opRead {
 		file, err = os.Open(filepath)
 	} else {
+		if fileExists(filepath) && !allowOverwrite {
+			log.Println("Attempted overwrite of existing file")
+			writeError(conn, errAccessViolation, "Attempted overwrite of existing file")
+			return
+		}
 		file, err = os.Create(filepath)
 	}
 
