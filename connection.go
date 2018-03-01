@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"log"
 	"os"
 	"time"
@@ -150,7 +151,7 @@ func (c *connection) prepareNextBlock() error {
 	c.blockCounter++
 
 	n, err := c.file.Read(c.currentBlock)
-	if err != nil {
+	if err != nil && err != io.EOF {
 		return err
 	}
 
