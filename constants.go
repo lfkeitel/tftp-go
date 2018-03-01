@@ -42,7 +42,7 @@ const (
 
 // TFTP options
 const (
-	optionBulkSize     = "blksize"
+	optionBlockSize    = "blksize"
 	optionTimeout      = "timeout"
 	optionTransferSize = "tsize"
 )

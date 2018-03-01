@@ -218,7 +218,7 @@ func parseOptions(options [][]byte) (*tftpOptions, map[string]string) {
 		value := string(options[i+1])
 
 		switch option {
-		case optionBulkSize:
+		case optionBlockSize:
 			val, err := strconv.Atoi(value)
 			if err != nil {
 				continue
@@ -226,11 +226,11 @@ func parseOptions(options [][]byte) (*tftpOptions, map[string]string) {
 
 			if val < 8 || val > 65464 { // Request value out of range
 				// Respond with default
-				ackedOptions[optionBulkSize] = strconv.Itoa(base.blockSize)
+				ackedOptions[optionBlockSize] = strconv.Itoa(base.blockSize)
 				continue
 			}
 			base.blockSize = val
-			ackedOptions[optionBulkSize] = value
+			ackedOptions[optionBlockSize] = value
 		case optionTimeout:
 			val, err := strconv.Atoi(value)
 			if err != nil {
