@@ -39,10 +39,11 @@ func (c *testPacketConn) setNextRead(resp []byte)            { c.nextRead = resp
 func TestAck(t *testing.T) {
 	c := &testPacketConn{t: t}
 	c.setNextWrite([]byte{0, 4, 0, 10})
-	sendAck(&requestConn{conn: c}, 10)
+	conn := &requestConn{conn: c}
+	conn.sendAck(10)
 
 	c.setNextWrite([]byte{0, 4, 1, 0})
-	sendAck(&requestConn{conn: c}, 256)
+	conn.sendAck(256)
 }
 
 func TestOAck(t *testing.T) {
@@ -54,7 +55,8 @@ func TestOAck(t *testing.T) {
 	next = append(next, 0)
 	c.setNextWrite(next)
 
-	sendOAck(&requestConn{conn: c}, map[string]string{
+	conn := &requestConn{conn: c}
+	conn.sendOAck(map[string]string{
 		"blksize": "1024",
 	})
 }

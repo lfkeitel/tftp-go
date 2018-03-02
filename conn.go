@@ -6,11 +6,20 @@ import (
 	"time"
 )
 
-func sendReadWriteRequest(conn *requestConn, op uint16, filename, mode string) {
-	if op != opWrite && op != opRead {
-		return
-	}
+type requestConn struct {
+	conn net.PacketConn
+	addr net.Addr
+}
 
+func (conn *requestConn) sendReadRequest(filename, mode string) {
+	conn.sendRWRequest(opRead, filename, mode)
+}
+
+func (conn *requestConn) sendWriteRequest(filename, mode string) {
+	conn.sendRWRequest(opWrite, filename, mode)
+}
+
+func (conn *requestConn) sendRWRequest(op opCode, filename, mode string) {
 	filenameBytes := []byte(filename)
 	modeBytes := []byte(mode)
 	resp := make([]byte, 4+len(filenameBytes)+len(modeBytes))
@@ -21,13 +30,13 @@ func sendReadWriteRequest(conn *requestConn, op uint16, filename, mode string) {
 	copy(resp[2:len(filenameBytes)+2], filenameBytes)
 	resp[len(filenameBytes)+2] = 0 // Null terminator
 	// Mode
-	copy(resp[len(filenameBytes)+3:len(resp)], modeBytes)
+	copy(resp[len(filenameBytes)+3:], modeBytes)
 	resp[len(resp)-1] = 0 // Null terminator
 
 	conn.conn.WriteTo(resp, conn.addr)
 }
 
-func sendData(conn *requestConn, blockID uint16, data []byte) {
+func (conn *requestConn) sendData(blockID uint16, data []byte) {
 	resp := make([]byte, 4+len(data))
 	// Op code
 	resp[0] = byte(opData >> 8)
@@ -41,7 +50,7 @@ func sendData(conn *requestConn, blockID uint16, data []byte) {
 	conn.conn.WriteTo(resp, conn.addr)
 }
 
-func sendAck(conn *requestConn, blockID uint16) {
+func (conn *requestConn) sendAck(blockID uint16) {
 	resp := make([]byte, 4)
 	// Op code
 	resp[0] = byte(opAck >> 8)
@@ -53,7 +62,7 @@ func sendAck(conn *requestConn, blockID uint16) {
 	conn.conn.WriteTo(resp, conn.addr)
 }
 
-func sendOAck(conn *requestConn, options map[string]string) {
+func (conn *requestConn) sendOAck(options map[string]string) {
 	resp := make([]byte, 2, 2+totalStringMapLen(options))
 	// Op code
 	resp[0] = byte(opOAck >> 8)
@@ -69,19 +78,7 @@ func sendOAck(conn *requestConn, options map[string]string) {
 	conn.conn.WriteTo(resp, conn.addr)
 }
 
-func totalStringMapLen(m map[string]string) int {
-	size := 0
-
-	for k, v := range m {
-		size += len(k)
-		size += len(v)
-		size += 2 // NULL separators
-	}
-
-	return size
-}
-
-func writeError(conn *requestConn, code int, msg string) {
+func (conn *requestConn) sendError(code tftpError, msg string) {
 	msgBytes := []byte(msg)
 
 	resp := make([]byte, 5+len(msgBytes))
@@ -99,17 +96,17 @@ func writeError(conn *requestConn, code int, msg string) {
 	conn.conn.WriteTo(resp, conn.addr)
 }
 
-func nextMessage(client *requestConn, op uint16, options *tftpOptions) *response {
+func (conn *requestConn) readNextMessage(op opCode, options *tftpOptions) *response {
 	var buffer []byte
 	if op == opRead {
-		buffer = make([]byte, 512)
+		buffer = make([]byte, defaultOptions.blockSize)
 	} else {
 		buffer = make([]byte, options.blockSize+4)
 	}
 
-	client.conn.SetReadDeadline(time.Now().Add(options.timeout))
+	conn.conn.SetReadDeadline(time.Now().Add(options.timeout))
 
-	n, addr, err := client.conn.ReadFrom(buffer)
+	n, addr, err := conn.conn.ReadFrom(buffer)
 	if err != nil {
 		netErr := err.(net.Error)
 		if netErr.Timeout() {
@@ -119,16 +116,16 @@ func nextMessage(client *requestConn, op uint16, options *tftpOptions) *response
 		return nil
 	}
 
-	client.addr = addr
+	conn.addr = addr
 
 	if n < 4 {
-		writeError(client, errNotDefined, "Malformatted message")
+		conn.sendError(errNotDefined, "Malformatted message")
 		return nil
 	}
 
 	recv := buffer[:n]
 
-	opcode := decodeUInt16(recv[:2])
+	opcode := opCode(decodeUInt16(recv[:2]))
 
 	switch opcode {
 	case opAck:
@@ -139,7 +136,7 @@ func nextMessage(client *requestConn, op uint16, options *tftpOptions) *response
 	case opError:
 		errorMsg := ""
 		if len(recv) > 4 {
-			errorMsg = string(recv[4 : len(recv)-1])
+			errorMsg = string(recv[4 : len(recv)-2]) // Strip null terminator
 		}
 
 		return &response{
@@ -154,7 +151,7 @@ func nextMessage(client *requestConn, op uint16, options *tftpOptions) *response
 			data:    recv[4:],
 		}
 	default:
-		writeError(client, errIllegalOperation, "")
+		conn.sendError(errIllegalOperation, "")
 		return nil
 	}
 }

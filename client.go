@@ -7,24 +7,32 @@ import (
 	"time"
 )
 
-type connection struct {
-	op           uint16
+type stater interface {
+	Stat() (os.FileInfo, error)
+}
+
+type lengther interface {
+	Len() int
+}
+
+type client struct {
+	op           opCode
 	currentBlock []byte
 	blockCounter uint16
-	client       *requestConn
-	file         *os.File
+	conn         *requestConn
+	data         io.ReadWriter
 	options      *tftpOptions
 }
 
 type response struct {
-	op        uint16
+	op        opCode
 	blockID   uint16
 	errorCode uint16
 	errorMsg  string
 	data      []byte
 }
 
-func (c *connection) start() {
+func (c *client) start() {
 	c.currentBlock = make([]byte, c.options.blockSize)
 	c.blockCounter = 0
 
@@ -38,14 +46,21 @@ func (c *connection) start() {
 	log.Printf("Transfer completed in %s", time.Since(start).String())
 }
 
-func (c *connection) doRead() {
-	stat, err := c.file.Stat()
-	if err != nil {
-		c.close()
-		return
+func (c *client) doRead() {
+	var size int64
+
+	if file, ok := c.data.(stater); ok {
+		stat, err := file.Stat()
+		if err != nil {
+			c.close()
+			return
+		}
+		size = stat.Size()
+	} else if buf, ok := c.data.(lengther); ok {
+		size = int64(buf.Len())
 	}
 
-	log.Printf("Starting transfer of %d bytes\n", stat.Size())
+	log.Printf("Starting transfer of %d bytes\n", size)
 	prepareNextBlock := true
 	retransmits := 0
 
@@ -53,14 +68,14 @@ func (c *connection) doRead() {
 		if prepareNextBlock {
 			if err := c.prepareNextBlock(); err != nil {
 				log.Println(err)
-				writeError(c.client, errAccessViolation, "")
+				c.conn.sendError(errAccessViolation, "")
 				c.close()
 				break
 			}
 		}
 
 		c.sendBlock()
-		resp := nextMessage(c.client, c.op, c.options)
+		resp := c.conn.readNextMessage(c.op, c.options)
 		if resp == nil {
 			c.close()
 			break
@@ -85,7 +100,7 @@ func (c *connection) doRead() {
 			retransmits++
 			continue
 		} else {
-			writeError(c.client, errIllegalOperation, "Invalid operation for read request")
+			c.conn.sendError(errIllegalOperation, "Invalid operation for read request")
 			c.close()
 			break
 		}
@@ -97,30 +112,30 @@ func (c *connection) doRead() {
 	}
 }
 
-func (c *connection) doWrite() {
+func (c *client) doWrite() {
 	log.Println("Starting write")
 	if !c.options.oackSent {
-		sendAck(c.client, 0)
+		c.conn.sendAck(0)
 	}
 
 	for {
-		resp := nextMessage(c.client, c.op, c.options)
+		resp := c.conn.readNextMessage(c.op, c.options)
 		if resp == nil {
 			c.close()
 			break
 		}
 
 		if resp.op == opData {
-			_, err := c.file.Write(resp.data)
+			_, err := c.data.Write(resp.data)
 			if err != nil {
 				log.Println(err)
-				writeError(c.client, errAccessViolation, "Failed to write block")
+				c.conn.sendError(errAccessViolation, "Failed to write block")
 				c.close()
 				break
 			}
 
 			c.blockCounter = resp.blockID
-			sendAck(c.client, c.blockCounter)
+			c.conn.sendAck(c.blockCounter)
 
 			if len(resp.data) < c.options.blockSize { // Transfer complete
 				c.close()
@@ -131,26 +146,26 @@ func (c *connection) doWrite() {
 			c.close()
 			break
 		} else if resp.op == opRetransmit {
-			sendAck(c.client, c.blockCounter)
+			c.conn.sendAck(c.blockCounter)
 		} else {
-			writeError(c.client, errIllegalOperation, "Invalid operation for read request")
+			c.conn.sendError(errIllegalOperation, "Invalid operation for read request")
 			c.close()
 			break
 		}
 	}
 }
 
-func (c *connection) close() {
-	c.client.conn.Close()
-	if c.file != nil {
-		c.file.Close()
+func (c *client) close() {
+	c.conn.conn.Close()
+	if closer, ok := c.data.(io.Closer); c.data != nil && ok {
+		closer.Close()
 	}
 }
 
-func (c *connection) prepareNextBlock() error {
+func (c *client) prepareNextBlock() error {
 	c.blockCounter++
 
-	n, err := c.file.Read(c.currentBlock)
+	n, err := c.data.Read(c.currentBlock)
 	if err != nil && err != io.EOF {
 		return err
 	}
@@ -160,6 +175,6 @@ func (c *connection) prepareNextBlock() error {
 	return nil
 }
 
-func (c *connection) sendBlock() {
-	sendData(c.client, c.blockCounter, c.currentBlock)
+func (c *client) sendBlock() {
+	c.conn.sendData(c.blockCounter, c.currentBlock)
 }
