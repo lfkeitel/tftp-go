@@ -118,9 +118,9 @@ func processRequest(conn *requestConn, op uint16, req [][]byte) {
 	if op == opRead {
 		file, err = os.Open(filepath)
 	} else {
-		if fileExists(filepath) && !allowOverwrite {
+		if exists && !allowOverwrite {
 			log.Println("Attempted overwrite of existing file")
-			writeError(conn, errAccessViolation, "Attempted overwrite of existing file")
+			writeError(conn, errFileExists, "Attempted overwrite of existing file")
 			return
 		}
 		file, err = os.Create(filepath)
