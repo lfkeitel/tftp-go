@@ -102,7 +102,15 @@ func (s *server) processRequest(conn *requestConn, op opCode, req [][]byte) {
 	filename = strings.Replace(filename, "..", "", -1) // Prevent escaping from root directory
 	filepath, _ := filepath.Abs(filepath.Join(s.rootDir, filename))
 
-	log.Printf("%s request for %s with mode %s from %s\n", op, filename, mode, conn.addr.String())
+	log.Printf("%s request for %s with mode %s from %s", op, filename, mode, conn.addr.String())
+	if mode != modeOctet {
+		if flgStrict {
+			conn.sendError(errAccessViolation, "Unsupported mode")
+			return
+		}
+
+		log.Printf("WARNING: Client is using %s mode but the server will be using octet.", mode)
+	}
 
 	exists := fileExists(filepath)
 
@@ -163,9 +171,10 @@ func (s *server) processRequest(conn *requestConn, op opCode, req [][]byte) {
 	directConn := &requestConn{conn: newConn, addr: conn.addr}
 
 	// We need to send option ack
-	if len(ackedOptions) > 0 {
+	if !flgRFC1350 && len(ackedOptions) > 0 {
+		debug("ACKing requested options: %#v", ackedOptions)
 		directConn.sendOAck(ackedOptions)
-		options.oackSent = true // Tells the connection.doWrite() not to send an ack
+		options.oackSent = true // Tells the connection.recvFile() not to send an ack
 
 		if op == opRead { // Get client's ACK for our OACK
 			retransmits := 0
@@ -184,14 +193,24 @@ func (s *server) processRequest(conn *requestConn, op opCode, req [][]byte) {
 						return
 					}
 
+					debug("Retransmitting OACK")
 					directConn.sendOAck(ackedOptions)
 					retransmits++
 					continue
 				} else if resp.op == opAck {
+					debug("Received ACK")
+					break
+				} else {
+					debug("Received ILLEGAL")
+					directConn.sendError(errIllegalOperation, "Invalid operation for read request")
+					newConn.Close()
+					file.Close()
 					break
 				}
 			}
 		}
+	} else if flgRFC1350 {
+		debug("TFTP options are disabled, not acknowledging")
 	}
 
 	client2 := &client{
@@ -201,5 +220,5 @@ func (s *server) processRequest(conn *requestConn, op opCode, req [][]byte) {
 		options: options,
 	}
 
-	go client2.start()
+	go client2.run()
 }

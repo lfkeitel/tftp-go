@@ -16,12 +16,14 @@ type lengther interface {
 }
 
 type client struct {
-	op           opCode
-	currentBlock []byte
-	blockCounter uint16
-	conn         *requestConn
-	data         io.ReadWriter
-	options      *tftpOptions
+	op               opCode
+	currentBlock     []byte
+	blockCounter     uint16
+	conn             *requestConn
+	data             io.ReadWriter
+	options          *tftpOptions
+	requestedOptions *tftpOptions
+	remotePath       string
 }
 
 type response struct {
@@ -30,23 +32,24 @@ type response struct {
 	errorCode uint16
 	errorMsg  string
 	data      []byte
+	options   *tftpOptions
 }
 
-func (c *client) start() {
+func (c *client) run() {
 	c.currentBlock = make([]byte, c.options.blockSize)
 	c.blockCounter = 0
 
 	start := time.Now()
 	switch c.op {
 	case opRead:
-		c.doRead()
+		c.sendFile()
 	case opWrite:
-		c.doWrite()
+		c.recvFile()
 	}
 	log.Printf("Transfer completed in %s", time.Since(start).String())
 }
 
-func (c *client) doRead() {
+func (c *client) sendFile() {
 	var size int64
 
 	if file, ok := c.data.(stater); ok {
@@ -82,8 +85,14 @@ func (c *client) doRead() {
 		}
 
 		if resp.op == opAck { // Client acknowledged data block
+			debug("Received ACK")
 			prepareNextBlock = resp.blockID == c.blockCounter
 			retransmits = 0
+
+			if len(c.currentBlock) < c.options.blockSize {
+				c.close()
+				break
+			}
 		} else if resp.op == opError { // Client sent error
 			log.Printf("Error %d: %s", resp.errorCode, resp.errorMsg)
 			c.close()
@@ -95,28 +104,27 @@ func (c *client) doRead() {
 				break
 			}
 
-			log.Println("Retransmitting last block")
+			debug("Retransmitting last block")
 			prepareNextBlock = false
 			retransmits++
 			continue
 		} else {
+			debug("Received ILLEGAL")
 			c.conn.sendError(errIllegalOperation, "Invalid operation for read request")
-			c.close()
-			break
-		}
-
-		if len(c.currentBlock) < c.options.blockSize {
 			c.close()
 			break
 		}
 	}
 }
 
-func (c *client) doWrite() {
-	log.Println("Starting write")
-	if !c.options.oackSent {
-		c.conn.sendAck(0)
+func (c *client) recvFile() {
+	c.blockCounter = 0
+
+	log.Println("Starting file receive")
+	if !c.options.oackSent && c.requestedOptions == nil {
+		c.conn.sendAck(c.blockCounter)
 	}
+	retransmits := 0
 
 	for {
 		resp := c.conn.readNextMessage(c.op, c.options)
@@ -126,6 +134,10 @@ func (c *client) doWrite() {
 		}
 
 		if resp.op == opData {
+			debug("Received DATA")
+			retransmits = 0
+
+			c.requestedOptions = nil
 			_, err := c.data.Write(resp.data)
 			if err != nil {
 				log.Println(err)
@@ -146,9 +158,30 @@ func (c *client) doWrite() {
 			c.close()
 			break
 		} else if resp.op == opRetransmit {
-			c.conn.sendAck(c.blockCounter)
+			if retransmits >= maxRetransmits {
+				log.Println("Max retransmits exceeded, terminating tranfer")
+				c.close()
+				break
+			}
+
+			if c.requestedOptions != nil {
+				debug("Retransmitting read request")
+				c.conn.sendReadRequest(c.remotePath, modeOctet, c.requestedOptions.toMap())
+			} else {
+				debug("Retransmitting ACK")
+				c.conn.sendAck(c.blockCounter)
+			}
+			retransmits++
+		} else if resp.op == opOAck {
+			debug("Received OACK")
+			if c.requestedOptions != nil {
+				c.options = resp.options
+			}
+			debug("ACKing OACK")
+			c.conn.sendAck(0)
 		} else {
-			c.conn.sendError(errIllegalOperation, "Invalid operation for read request")
+			debug("Received ILLEGAL")
+			c.conn.sendError(errIllegalOperation, "Invalid operation for write request")
 			c.close()
 			break
 		}
@@ -156,7 +189,7 @@ func (c *client) doWrite() {
 }
 
 func (c *client) close() {
-	c.conn.conn.Close()
+	c.conn.Close()
 	if closer, ok := c.data.(io.Closer); c.data != nil && ok {
 		closer.Close()
 	}
@@ -176,5 +209,6 @@ func (c *client) prepareNextBlock() error {
 }
 
 func (c *client) sendBlock() {
+	debug("Sending DATA block # %d", c.blockCounter)
 	c.conn.sendData(c.blockCounter, c.currentBlock)
 }

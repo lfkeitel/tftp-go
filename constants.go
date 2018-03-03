@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"time"
 )
 
@@ -55,10 +56,11 @@ const (
 	errOptionsDenied    tftpError = 8
 )
 
-// TFTP transfer modes, netascii is not acually implemented. All connections are assumed to be octet mode.
+// TFTP transfer modes, for completeness. All connections are treated as octet mode.
 const (
 	modeNetascii = "netascii"
 	modeOctet    = "octet"
+	modeMail     = "mail"
 )
 
 // TFTP options
@@ -66,7 +68,16 @@ const (
 	optionBlockSize    = "blksize"
 	optionTimeout      = "timeout"
 	optionTransferSize = "tsize"
+	optionWindowSize   = "windowsize"
 )
+
+type tftpOptions struct {
+	oackSent   bool
+	blockSize  int
+	timeout    time.Duration
+	windowSize int
+	tsize      int64
+}
 
 // defaultOptions should never be changed at runtime. These settings comply
 // with RFC 1350 and will act as if no options were given if used as is.
@@ -77,14 +88,6 @@ var defaultOptions = &tftpOptions{
 	tsize:      -1,
 }
 
-type tftpOptions struct {
-	oackSent   bool
-	blockSize  int
-	timeout    time.Duration
-	windowSize int
-	tsize      int64
-}
-
 func (o *tftpOptions) copy() *tftpOptions {
 	return &tftpOptions{
 		oackSent:   o.oackSent,
@@ -93,4 +96,23 @@ func (o *tftpOptions) copy() *tftpOptions {
 		windowSize: o.windowSize,
 		tsize:      o.tsize,
 	}
+}
+
+func (o *tftpOptions) toMap() map[string]string {
+	r := make(map[string]string)
+
+	if o.blockSize != defaultOptions.blockSize {
+		r[optionBlockSize] = strconv.Itoa(o.blockSize)
+	}
+	if o.timeout != defaultOptions.timeout {
+		r[optionTimeout] = strconv.Itoa(int(o.timeout / time.Second))
+	}
+	if o.tsize > -1 {
+		r[optionTransferSize] = strconv.FormatInt(o.tsize, 10)
+	}
+	if o.windowSize > -1 {
+		r[optionWindowSize] = strconv.Itoa(o.windowSize)
+	}
+
+	return r
 }

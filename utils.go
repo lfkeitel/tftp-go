@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -39,6 +40,7 @@ func parseOptions(options [][]byte) (*tftpOptions, map[string]string) {
 		value := string(options[i+1])
 
 		switch option {
+		// case optionWindowSize: // windowsize isn't supported at this time
 		case optionBlockSize:
 			val, err := strconv.Atoi(value)
 			if err != nil {
@@ -102,4 +104,18 @@ func encodeUInt16(in uint16) []byte {
 func fileExists(filename string) bool {
 	_, err := os.Stat(filename)
 	return err == nil
+}
+
+func debug(fmt string, a ...interface{}) {
+	if flgDebug {
+		log.Printf(fmt, a...)
+	}
+}
+
+func filesize(file *os.File) int64 {
+	stat, err := file.Stat()
+	if err != nil {
+		return -1
+	}
+	return stat.Size()
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"log"
 	"net"
 	"time"
@@ -11,18 +12,23 @@ type requestConn struct {
 	addr net.Addr
 }
 
-func (conn *requestConn) sendReadRequest(filename, mode string) {
-	conn.sendRWRequest(opRead, filename, mode)
+func (conn *requestConn) Close() error {
+	return conn.conn.Close()
 }
 
-func (conn *requestConn) sendWriteRequest(filename, mode string) {
-	conn.sendRWRequest(opWrite, filename, mode)
+func (conn *requestConn) sendReadRequest(filename, mode string, options map[string]string) {
+	conn.sendRWRequest(opRead, filename, mode, options)
 }
 
-func (conn *requestConn) sendRWRequest(op opCode, filename, mode string) {
+func (conn *requestConn) sendWriteRequest(filename, mode string, options map[string]string) {
+	conn.sendRWRequest(opWrite, filename, mode, options)
+}
+
+func (conn *requestConn) sendRWRequest(op opCode, filename, mode string, options map[string]string) {
 	filenameBytes := []byte(filename)
 	modeBytes := []byte(mode)
-	resp := make([]byte, 4+len(filenameBytes)+len(modeBytes))
+	initialSize := 4 + len(filenameBytes) + len(modeBytes)
+	resp := make([]byte, initialSize, initialSize+totalStringMapLen(options))
 	// Op code
 	resp[0] = byte(op >> 8)
 	resp[1] = byte(op)
@@ -32,6 +38,13 @@ func (conn *requestConn) sendRWRequest(op opCode, filename, mode string) {
 	// Mode
 	copy(resp[len(filenameBytes)+3:], modeBytes)
 	resp[len(resp)-1] = 0 // Null terminator
+
+	for k, v := range options {
+		resp = append(resp, []byte(k)...)
+		resp = append(resp, 0)
+		resp = append(resp, []byte(v)...)
+		resp = append(resp, 0)
+	}
 
 	conn.conn.WriteTo(resp, conn.addr)
 }
@@ -110,7 +123,7 @@ func (conn *requestConn) readNextMessage(op opCode, options *tftpOptions) *respo
 	if err != nil {
 		netErr := err.(net.Error)
 		if netErr.Timeout() {
-			return &response{op: opRetransmit}
+			return conn.log(&response{op: opRetransmit})
 		}
 		log.Println(err)
 		return nil
@@ -129,29 +142,40 @@ func (conn *requestConn) readNextMessage(op opCode, options *tftpOptions) *respo
 
 	switch opcode {
 	case opAck:
-		return &response{
+		return conn.log(&response{
 			op:      opAck,
 			blockID: decodeUInt16(recv[2:4]),
-		}
+		})
 	case opError:
 		errorMsg := ""
 		if len(recv) > 4 {
-			errorMsg = string(recv[4 : len(recv)-2]) // Strip null terminator
+			errorMsg = string(recv[4 : len(recv)-1]) // Strip null terminator
 		}
 
-		return &response{
+		return conn.log(&response{
 			op:        opError,
 			errorCode: decodeUInt16(recv[2:4]),
 			errorMsg:  errorMsg,
-		}
+		})
 	case opData:
-		return &response{
+		return conn.log(&response{
 			op:      opData,
 			blockID: decodeUInt16(recv[2:4]),
 			data:    recv[4:],
-		}
+		})
+	case opOAck:
+		options, _ := parseOptions(bytes.Split(recv[2:], []byte{0}))
+		return conn.log(&response{
+			op:      opOAck,
+			options: options,
+		})
 	default:
 		conn.sendError(errIllegalOperation, "")
 		return nil
 	}
+}
+
+func (conn *requestConn) log(r *response) *response {
+	debug("%#v\n", r)
+	return r
 }
