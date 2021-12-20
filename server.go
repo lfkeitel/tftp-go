@@ -116,6 +116,7 @@ func (s *server) processRequest(conn *requestConn, op opCode, req [][]byte) {
 
 	if op == opRead && !exists {
 		conn.sendError(errFileNotFound, "File not found")
+		log.Printf("File %s not found.", filepath)
 		return
 	}
 
