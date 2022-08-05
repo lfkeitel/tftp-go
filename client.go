@@ -137,6 +137,12 @@ func (c *client) recvFile() {
 			debug("Received DATA")
 			retransmits = 0
 
+			if resp.blockID != c.blockCounter+1 {
+				log.Printf("Warning: Block # expected %d, block # received %d", c.blockCounter+1, resp.blockID)
+				c.conn.sendAck(c.blockCounter)
+				continue
+			}
+
 			c.requestedOptions = nil
 			_, err := c.data.Write(resp.data)
 			if err != nil {
